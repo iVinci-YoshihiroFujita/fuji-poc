@@ -10,13 +10,18 @@ import { Function, Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import {
+  DefinitionBody,
   JsonPath,
+  Parallel,
   StateMachine,
   StateMachineType,
   TaskInput,
 } from "aws-cdk-lib/aws-stepfunctions";
 import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
+import { FaceDetectionJob } from "./jobs/face-detection.job";
+import { TranscriptionJob } from "./jobs/transcription.job";
+import { SentimentDetectionJob } from "./jobs/sentiment-detection.job";
 
 export class AnalysisWorkflowStack extends NestedStack {
   /** 感情分析のインプットとなるインタビュー動画、及び感情分析結果を格納するバケット */
@@ -64,13 +69,34 @@ export class AnalysisWorkflowStack extends NestedStack {
       }),
     });
 
-    // TODO: FaceDetectionJobを追加
-    // TODO: TranscriptionJobを追加
-    // TODO: SentimentDetectionJobを追加
+    const faceDetectionJob = new FaceDetectionJob(this, "FaceDetectionJob", {});
+    const transcriptionJob = new TranscriptionJob(this, "TranscriptionJob", {});
+    const sentimentDetectionJob = new SentimentDetectionJob(
+      this,
+      "SentimentDetectionJob",
+      {}
+    );
+
+    const startAggregationState = new LambdaInvoke(this, "StartAggregation", {
+      lambdaFunction: this.taskControllerFunction,
+      payload: TaskInput.fromObject({
+        detail: JsonPath.objectAt("$.detail"),
+        state: JsonPath.stateName,
+      }),
+    });
+
+    const parallelJob = new Parallel(this, "ParallelJobExecution")
+      .branch(faceDetectionJob)
+      .branch(transcriptionJob.next(sentimentDetectionJob));
+
+    const definition = analysisStartState
+      .next(parallelJob)
+      .next(startAggregationState);
 
     return new StateMachine(this, "AnalysisStateMachine", {
       stateMachineName: "AnalysisStateMachine",
       stateMachineType: StateMachineType.STANDARD,
+      definitionBody: DefinitionBody.fromChainable(definition),
       comment: "感情分析を行うワークフロー",
       // logs: TODO: logGroupを設定
       removalPolicy: RemovalPolicy.DESTROY,
